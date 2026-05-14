@@ -1,0 +1,15 @@
+[package]
+name = "nudo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+miette = { version = "7.6.0", features = ["fancy"] }
+nix = { version = "0.31.2", features = ["user"] }
+pam = "0.8.0"
+regex = "1.12.3"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+toml = "1.1.2"
+zeroize = "1.8.2"
