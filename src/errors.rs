@@ -24,8 +24,8 @@ pub enum NudoError {
     #[diagnostic(transparent)]
     Auth(#[from] AuthError),
 
-    #[error("Error while parsing the config file")]
-    #[diagnostic(code(nudo::config::error))]
+    #[error(transparent)]
+    #[diagnostic(transparent)]
     Config(#[from] ConfigError),
 }
 
@@ -45,12 +45,26 @@ pub enum AuthError {
     )]
     InvalidUserId { userid: u32 },
 
+    #[error("The Group `{group_id}` is not a valid group.")]
+    #[diagnostic(
+        code(nudo::auth::invalid_group),
+        help("Check /etc/passwd or update Nudoers config.")
+    )]
+    InvalidGroup { group_id: u32 },
+
     #[error("Password entered for `{username}` was incorrect")]
     #[diagnostic(
         code(nudo::auth::incorrect_password),
         help("Please enter the correct password and try again.")
     )]
     IncorrectPassword { username: String },
+
+    #[error("The user does not have enough priviledges in the config file to execute this action")]
+    #[diagnostic(
+        code(nudo::auth::insufficient_priviledges),
+        help("Edit the nudoers config and try again.")
+    )]
+    InsufficientPriviledges,
 }
 
 #[derive(Debug, Error, Diagnostic)]
@@ -82,17 +96,27 @@ impl<T> OptionExt<T> for Option<T> {
 pub fn invalid_invariant<T>() -> NudoResult<T> {
     Err(NudoError::Nudo(InternalError::InvalidInvariant))
 }
-#[macro_export]
-macro_rules! invalid_invariant {
-    () => {
-        $crate::errors::invalid_invariant()
-    };
+
+#[derive(Error, Diagnostic, Debug)]
+pub enum ConfigError {
+    #[error("Config file `{missing_config}` for nudo was not found.")]
+    #[diagnostic(
+        code(nudo::config::config_not_found),
+        help("Create and Populate the file at `{missing_config}`")
+    )]
+    ConfigNotFound { missing_config: String },
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    TomlError(TomlError),
+
+    #[error("One of the regexes in CommandRules in Nudoers config was incorrent.")]
+    #[diagnostic(code(nudo::config::regex_error), help("Fix the regex"))]
+    InvalidRegex,
 }
 
-//ConfigError
-#[derive(Error, Debug, Diagnostic)]
+#[derive(Error, Diagnostic, Debug)]
 #[error("Failed to parse the config")]
-pub struct ConfigError {
+pub struct TomlError {
     #[source_code]
     src: NamedSource<String>,
 
@@ -113,11 +137,11 @@ impl NudoError {
             .span()
             .map(|r| (r.start, r.end - r.start).into())
             .unwrap_or((0, 0).into());
-        Self::Config(ConfigError {
+        Self::Config(ConfigError::TomlError(TomlError {
             span,
             src: NamedSource::new(source_name, source),
             err: Box::new(err),
-        })
+        }))
     }
 }
 

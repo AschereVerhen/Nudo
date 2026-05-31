@@ -2,7 +2,6 @@
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
 #![deny(clippy::undocumented_unsafe_blocks)]
-
 use std::{path::PathBuf, sync::LazyLock};
 
 use nix::unistd::{Uid, User};
@@ -14,13 +13,14 @@ pub mod config;
 pub mod errors;
 pub mod execution;
 pub mod pam;
+pub mod priviledges;
 
 pub static USER_CONFIG: LazyLock<PathBuf> =
-    LazyLock::new(|| PathBuf::from("/etc/nudo.d/nudoers.conf"));
+    LazyLock::new(|| PathBuf::from("/etc/nudo.d/nudoers.toml"));
 pub static NUDO_CONFIG: LazyLock<PathBuf> =
-    LazyLock::new(|| PathBuf::from("/etc/nudo.d/nudo.conf"));
+    LazyLock::new(|| PathBuf::from("/etc/nudo.d/nudo.toml"));
 
-pub static CALLING_USER: LazyLock<NudoResult<User>> = LazyLock::new(|| -> NudoResult<User> {
+pub fn get_calling_user() -> NudoResult<User> {
     let e = nix::unistd::getresuid()?;
     let userid = e.real;
 
@@ -35,4 +35,4 @@ pub static CALLING_USER: LazyLock<NudoResult<User>> = LazyLock::new(|| -> NudoRe
     }
 
     user.ok_or_else(|| unlikely_failure(userid))
-});
+}
