@@ -18,7 +18,6 @@ pub enum Commands {
         #[arg(long, short, default_value_t = String::from("sh"))]
         program: String,
     },
-    DryRun,
 }
 
 #[derive(Args, Debug, Clone, Deserialize, Serialize)]

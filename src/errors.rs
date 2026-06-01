@@ -27,6 +27,10 @@ pub enum NudoError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Config(#[from] ConfigError),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Runtime(#[from] RuntimeError),
 }
 
 #[derive(Debug, Error, Diagnostic)]
@@ -143,6 +147,16 @@ impl NudoError {
             err: Box::new(err),
         }))
     }
+}
+
+#[derive(Error, Diagnostic, Debug)]
+pub enum RuntimeError {
+    #[error("The absolute path of `{program}` was not found.")]
+    #[diagnostic(
+        code(nudo::runtime::path_not_found),
+        help("Try to tweak the Path variable in nudo config")
+    )]
+    PathNotFound { program: String },
 }
 
 pub type NudoResult<T> = Result<T, NudoError>; //Ease of use

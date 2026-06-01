@@ -13,7 +13,6 @@ pub mod config;
 pub mod errors;
 pub mod execution;
 pub mod pam;
-pub mod priviledges;
 
 pub static USER_CONFIG: LazyLock<PathBuf> =
     LazyLock::new(|| PathBuf::from("/etc/nudo.d/nudoers.toml"));

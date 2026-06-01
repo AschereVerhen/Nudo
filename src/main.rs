@@ -1,20 +1,15 @@
 //First, a minimal proof of working.
-#![allow(unused)]
-use std::io::Write;
 
 use clap::Parser;
 use miette::IntoDiagnostic;
 use nudo::{
-    cli::{Cli, Commands},
+    cli::{Cli, Commands, RunArgs, Target},
     config::{NudoConfig, NudoersConfig, parse_config},
     errors::NudoResult,
     execution,
-    priviledges::drop_privs_temp,
 };
 
 fn main() -> miette::Result<()> {
-    let calling_user = nudo::get_calling_user().into_diagnostic()?;
-    println!("{:#?}", parse_config::<NudoersConfig>());
     let cmd = nudo::cli::Cli::parse();
     handle_commands(&cmd).into_diagnostic()?;
     Ok(())
@@ -27,13 +22,23 @@ fn handle_commands(cmd: &Cli) -> NudoResult<()> {
             Ok(())
         }
         Commands::CheckConfig => {
-            todo!()
+            parse_config::<NudoersConfig>()?;
+            parse_config::<NudoConfig>()?;
+
+            Ok(())
         }
         Commands::Shell { program } => {
-            todo!()
-        }
-        Commands::DryRun => {
-            todo!()
+            let runargs = RunArgs {
+                commands: vec![program.clone(), "-l".to_string()],
+                preserve_env: false,
+                user: Target {
+                    user_id: Some(0),
+                    user: None,
+                },
+            };
+            execution::execute(&runargs)?;
+
+            Ok(())
         }
     }
 }

@@ -7,7 +7,7 @@ use std::process::Command;
 use nix::unistd::{Group, User};
 
 use crate::cli::RunArgs;
-use crate::errors::{AuthError, InternalError, NudoError, NudoResult};
+use crate::errors::{AuthError, InternalError, NudoError, NudoResult, RuntimeError};
 use crate::{config::*, get_calling_user};
 use regex::Regex;
 //
@@ -87,9 +87,38 @@ fn extract_envs_to_keep(
     }
     let rule = rule[0];
     let envs = &rule.env;
-    let res = envs.clone()?;
+    let mut res = envs.clone()?;
+
+    if user.keep_env.is_none() {
+        return Some(res);
+    }
+    let t = &user.keep_env;
+    let keep_env = (t.clone())?;
+
+    for key in keep_env {
+        let value = std::env::var(&key);
+        if let Ok(val) = value {
+            res.insert(key, val);
+        }
+    }
 
     Some(res)
+}
+
+fn set_echo(set_value: bool) -> NudoResult<()> {
+    let stdin = std::io::stdin();
+
+    let mut term = nix::sys::termios::tcgetattr(&stdin)?;
+
+    if !set_value {
+        term.local_flags.remove(nix::sys::termios::LocalFlags::ECHO)
+    } else {
+        term.local_flags.insert(nix::sys::termios::LocalFlags::ECHO);
+    };
+
+    nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &term)?;
+
+    Ok(())
 }
 
 pub fn execute(args: &RunArgs) -> NudoResult<()> {
@@ -107,20 +136,34 @@ pub fn execute(args: &RunArgs) -> NudoResult<()> {
 
     let nudoconfig = parse_config::<NudoConfig>()?;
     let nudoersconfig = parse_config::<NudoersConfig>()?;
+    let user = nudoersconfig
+        .users
+        .get(&calling_user.name)
+        .ok_or(NudoError::Auth(AuthError::InvalidUser {
+            user: calling_user.name.clone(),
+        }))?;
     let path = &nudoconfig.path;
 
-    let program = full_path_of(program, path).unwrap(); //TODO: Better error handling
+    let program =
+        full_path_of(program, path).ok_or(NudoError::Runtime(RuntimeError::PathNotFound {
+            program: program.clone(),
+        }))?;
 
     ensure_access(&calling_user, &nudoersconfig, &program, arguments)?;
 
     let envs = extract_envs_to_keep(&calling_user, &program, &nudoersconfig);
 
-    let mut password = String::new();
-    print!("Enter Password for {}: ", &calling_user.name);
-    std::io::stdout().flush()?;
-    std::io::stdin().read_line(&mut password)?;
-    let password = password.trim().to_string();
-    crate::pam::authenticate_user(calling_user, password)?;
+    if user.password_required {
+        let mut password = String::new();
+        print!("Enter Password for {}: ", &calling_user.name);
+        set_echo(false)?;
+        std::io::stdout().flush()?;
+        std::io::stdin().read_line(&mut password)?;
+        let password = password.trim().to_string();
+        set_echo(true)?;
+        println!();
+        crate::pam::authenticate_user(calling_user, password)?;
+    }
 
     let mut program = Command::new(program);
     program
@@ -138,6 +181,7 @@ pub fn execute(args: &RunArgs) -> NudoResult<()> {
     if let Some(env) = envs {
         program.envs(env);
     }
+
     let e = program.exec();
 
     //If the above exec returns, it means that an error occured
