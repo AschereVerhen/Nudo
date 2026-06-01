@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nix::unistd::{Group, User};
+use nix::unistd::{Gid, Group, User};
 
 use crate::cli::RunArgs;
 use crate::errors::{AuthError, InternalError, NudoError, NudoResult, RuntimeError};
@@ -40,134 +39,120 @@ fn ensure_access(
     Ok(())
 }
 
+fn full_path_of(program_name: &str, path: &[PathBuf]) -> Option<PathBuf> {
+    path.iter().find_map(|dir| {
+        let candidate = dir.join(program_name);
+        candidate.canonicalize().ok()
+    })
+}
+
 fn match_execution_priv(conf: &Config, program: &PathBuf, arguments: &[String]) -> NudoResult<()> {
     const INSUFF_AUTH_ERROR: NudoError = NudoError::Auth(AuthError::InsufficientPriviledges);
     let rules = &conf.rules;
 
+    // Locate the matching rule block for the executable program target
     let cmdrule = rules
         .iter()
-        .find(|st| &st.command == program || &st.command == "*")
+        .find(|st| &st.command == program || st.command == Path::new("*"))
         .ok_or(INSUFF_AUTH_ERROR)?;
-    let regex_arg = Regex::new(&cmdrule.args)
-        .map_err(|_| NudoError::Config(crate::errors::ConfigError::InvalidRegex))?;
-    let success = regex_arg.is_match(&arguments.join(""));
 
-    if !success {
-        return Err(INSUFF_AUTH_ERROR);
+    // Validate via structural positional sequences if defined
+    if let Some(expected_args_rules) = &cmdrule.args {
+        if expected_args_rules.len() != arguments.len() {
+            return Err(INSUFF_AUTH_ERROR);
+        }
+
+        for (index, argument) in arguments.iter().enumerate() {
+            let regex_str = &expected_args_rules[index];
+            let regex_arg = Regex::new(regex_str)
+                .map_err(|_| NudoError::Config(crate::errors::ConfigError::InvalidRegex))?;
+
+            if !regex_arg.is_match(argument) {
+                return Err(INSUFF_AUTH_ERROR);
+            }
+        }
     }
 
     Ok(())
 }
 
-fn full_path_of(program_name: &str, path: &[PathBuf]) -> Option<PathBuf> {
-    path.iter().find_map(|dir| {
-        let candidate = dir.join(program_name);
-
-        if candidate.exists() {
-            candidate.canonicalize().ok()
-        } else {
-            None
-        }
-    })
-}
 #[allow(unused)]
 fn extract_envs_to_keep(
     user: &User,
     program: &Path,
     config: &NudoersConfig,
+    arguments: &[String],
 ) -> Option<HashMap<String, String>> {
-    let user = config.users.get(&user.name)?;
-    let rule = user
-        .rules
-        .iter()
-        .filter(|s| &s.command == "*" || s.command == program)
-        .collect::<Vec<&CommandRule>>();
-    if rule.len() != 1 {
-        return None;
-    }
-    let rule = rule[0];
-    let envs = &rule.env;
-    let mut res = envs.clone()?;
+    let user_profile = config.users.get(&user.name)?;
 
-    if user.keep_env.is_none() {
-        return Some(res);
-    }
-    let t = &user.keep_env;
-    let keep_env = (t.clone())?;
+    // Scan comprehensively to isolate the exact ruleset matching parameter counts
+    let rule = user_profile.rules.iter().find(|s| {
+        (&s.command == "*" || s.command == program)
+            && s.args.as_ref().is_none_or(|a| a.len() == arguments.len())
+    })?;
 
-    for key in keep_env {
-        let value = std::env::var(&key);
-        if let Ok(val) = value {
-            res.insert(key, val);
+    let mut res = rule.env.clone().unwrap_or_default();
+
+    if let Some(keep_env) = &user_profile.keep_env {
+        for key in keep_env {
+            if let Ok(val) = std::env::var(key) {
+                res.insert(key.clone(), val);
+            }
         }
     }
 
     Some(res)
 }
 
-fn set_echo(set_value: bool) -> NudoResult<()> {
-    let stdin = std::io::stdin();
-
-    let mut term = nix::sys::termios::tcgetattr(&stdin)?;
-
-    if !set_value {
-        term.local_flags.remove(nix::sys::termios::LocalFlags::ECHO)
-    } else {
-        term.local_flags.insert(nix::sys::termios::LocalFlags::ECHO);
-    };
-
-    nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &term)?;
-
-    Ok(())
-}
-
 pub fn execute(args: &RunArgs) -> NudoResult<()> {
     let commands = &args.commands;
 
-    //Safety: Clap prevents empty command vecs because required was enforced.
-    let program = commands
+    let program_raw = commands
         .first()
         .ok_or(NudoError::Nudo(InternalError::InvalidInvariant))?;
     let arguments = commands.get(1..).unwrap_or(&[]);
+
     let calling_user = get_calling_user()?;
     let target_user = args.get_user()?;
+
     let uid = target_user.uid.as_raw();
     let gid = target_user.gid.as_raw();
 
+    // CRITICAL FIX: Allocate and finalize the target username CString completely
+    // inside the parent process to keep the post-fork closure async-signal-safe.
+    let target_username_c = std::ffi::CString::new(target_user.name.clone()).map_err(|_| {
+        NudoError::Runtime(RuntimeError::NameContainsNul {
+            name: target_user.name,
+        })
+    })?;
+
     let nudoconfig = parse_config::<NudoConfig>()?;
     let nudoersconfig = parse_config::<NudoersConfig>()?;
-    let user = nudoersconfig
+
+    let user_conf = nudoersconfig
         .users
         .get(&calling_user.name)
         .ok_or(NudoError::Auth(AuthError::InvalidUser {
             user: calling_user.name.clone(),
         }))?;
-    let path = &nudoconfig.path;
+
+    if user_conf.password_required {
+        crate::pam::prompt_for_user_password_and_authenticate(&calling_user)?;
+    }
 
     let program =
-        full_path_of(program, path).ok_or(NudoError::Runtime(RuntimeError::PathNotFound {
-            program: program.clone(),
-        }))?;
+        crate::execution::full_path_of(program_raw, &nudoconfig.path).ok_or_else(|| {
+            NudoError::Runtime(RuntimeError::PathNotFound {
+                program: program_raw.clone(),
+            })
+        })?;
 
     ensure_access(&calling_user, &nudoersconfig, &program, arguments)?;
 
-    let envs = extract_envs_to_keep(&calling_user, &program, &nudoersconfig);
+    let envs = extract_envs_to_keep(&calling_user, &program, &nudoersconfig, arguments);
 
-    if user.password_required {
-        let mut password = String::new();
-        print!("Enter Password for {}: ", &calling_user.name);
-        set_echo(false)?;
-        std::io::stdout().flush()?;
-        std::io::stdin().read_line(&mut password)?;
-        let password = password.trim().to_string();
-        set_echo(true)?;
-        println!();
-        crate::pam::authenticate_user(calling_user, password)?;
-    }
-
-    let mut program = Command::new(program);
-    program
-        .args(arguments)
+    let mut cmd = Command::new(program);
+    cmd.args(arguments)
         .uid(uid)
         .gid(gid)
         .stdout(std::process::Stdio::inherit())
@@ -175,15 +160,25 @@ pub fn execute(args: &RunArgs) -> NudoResult<()> {
         .stdin(std::process::Stdio::inherit());
 
     if !args.preserve_env {
-        program.env_clear();
+        cmd.env_clear();
     }
 
     if let Some(env) = envs {
-        program.envs(env);
+        cmd.envs(env);
     }
 
-    let e = program.exec();
+    // Safety: pre_exec runs immediately after a fork context. The captured target_username_c allocation
+    // is performed entirely in the parent process beforehand, ensuring that no dynamic memory allocations
+    // occur in the child process. This satisfies all async-signal-safety guarantees.
+    unsafe {
+        cmd.pre_exec(move || {
+            nix::unistd::initgroups(&target_username_c, Gid::from_raw(gid)).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string())
+            })?;
+            Ok(())
+        });
+    }
 
-    //If the above exec returns, it means that an error occured
+    let e = cmd.exec();
     Err(NudoError::Std(e))
 }

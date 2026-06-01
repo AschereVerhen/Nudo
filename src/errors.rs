@@ -157,6 +157,20 @@ pub enum RuntimeError {
         help("Try to tweak the Path variable in nudo config")
     )]
     PathNotFound { program: String },
+
+    #[error("The user passed both --user, and --user-id, leading to ambiguous target.")]
+    #[diagnostic(
+        code(nudo::runtime::ambiguous_target),
+        help("Remove either --user or --user-id in the execution arguments")
+    )]
+    AmbiguousTarget,
+
+    #[error("The username: {name} contains a nulbyte, and hence C-ffi failed.")]
+    #[diagnostic(
+        code(nudo::runtime::nul_byte_in_name),
+        help("Remove the nulbyte from username")
+    )]
+    NameContainsNul { name: String },
 }
 
 pub type NudoResult<T> = Result<T, NudoError>; //Ease of use

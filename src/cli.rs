@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use nix::unistd::{Uid, User};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{AuthError, NudoError, NudoResult};
+use crate::errors::{AuthError, NudoError, NudoResult, RuntimeError};
 
 #[derive(Parser, Deserialize, Serialize, Clone, Debug)]
 pub struct Cli {
@@ -14,10 +14,6 @@ pub struct Cli {
 pub enum Commands {
     Run(RunArgs),
     CheckConfig,
-    Shell {
-        #[arg(long, short, default_value_t = String::from("sh"))]
-        program: String,
-    },
 }
 
 #[derive(Args, Debug, Clone, Deserialize, Serialize)]
@@ -54,10 +50,7 @@ impl RunArgs {
                 .ok_or(NudoError::Auth(AuthError::InvalidUserId { userid: *uid })),
             (None, None) => User::from_uid(Uid::from_raw(0))?
                 .ok_or(NudoError::Auth(AuthError::InvalidUserId { userid: 0 })),
-            _ => {
-                //SAFETY: any remaining states are impossible.
-                unsafe { std::hint::unreachable_unchecked() }
-            }
+            _ => Err(NudoError::Runtime(RuntimeError::AmbiguousTarget)),
         }
     }
 }

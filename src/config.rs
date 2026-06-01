@@ -42,7 +42,8 @@ pub struct Config {
 #[derive(Deserialize, Serialize, Debug, Default)]
 pub struct CommandRule {
     pub command: PathBuf,
-    pub args: String, //Regex string.
+    // Supports either a single catch-all regex or a precise positional string sequence matrix
+    pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
 }
 

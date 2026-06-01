@@ -3,7 +3,7 @@
 use clap::Parser;
 use miette::IntoDiagnostic;
 use nudo::{
-    cli::{Cli, Commands, RunArgs, Target},
+    cli::{Cli, Commands},
     config::{NudoConfig, NudoersConfig, parse_config},
     errors::NudoResult,
     execution,
@@ -24,19 +24,6 @@ fn handle_commands(cmd: &Cli) -> NudoResult<()> {
         Commands::CheckConfig => {
             parse_config::<NudoersConfig>()?;
             parse_config::<NudoConfig>()?;
-
-            Ok(())
-        }
-        Commands::Shell { program } => {
-            let runargs = RunArgs {
-                commands: vec![program.clone(), "-l".to_string()],
-                preserve_env: false,
-                user: Target {
-                    user_id: Some(0),
-                    user: None,
-                },
-            };
-            execution::execute(&runargs)?;
 
             Ok(())
         }
